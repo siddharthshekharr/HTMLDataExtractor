@@ -122,10 +122,24 @@ def save_to_csv(data: List[Dict], filename: str):
     if not data:
         print("No data to save.")
         return
+    
+    # Find all possible fieldnames
+    all_fieldnames = set()
+    for item in data:
+        all_fieldnames.update(item.keys())
+    
+    # Sort fieldnames to ensure consistent order
+    fieldnames = sorted(list(all_fieldnames))
+    
     with open(filename, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=data[0].keys())
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(data)
+        for row in data:
+            # Fill in missing values with empty strings
+            row_data = {field: row.get(field, '') for field in fieldnames}
+            writer.writerow(row_data)
+    
+    print(f"Data saved to {filename}")
 
 def save_to_json(data: List[Dict], filename: str):
     with open(filename, 'w', encoding='utf-8') as f:
@@ -138,6 +152,7 @@ def scrape_with_pagination(url: str, config: Dict, num_pages: int) -> List[Dict]
         html_content = get_page_content(url, page)
         soup = BeautifulSoup(html_content, 'html.parser')
         page_data = extract_data(soup, config)
+        print(f"Found {len(page_data)} items on page {page}")
         all_data.extend(page_data)
     return all_data
 

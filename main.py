@@ -7,6 +7,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
 from collections import Counter
 from typing import List, Dict
 import csv
@@ -22,8 +23,76 @@ def setup_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--disable-popup-blocking")
+    chrome_options.add_argument("--disable-notifications")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-infobars")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    
+    chrome_prefs = {
+        "profile.default_content_setting_values": {
+            "images": 2,
+            "notifications": 2,
+            "popups": 2,
+            "geolocation": 2,
+            "auto_select_certificate": 2,
+            "fullscreen": 2,
+            "mouselock": 2,
+            "mixed_script": 2,
+            "media_stream": 2,
+            "media_stream_mic": 2,
+            "media_stream_camera": 2,
+            "protocol_handlers": 2,
+            "ppapi_broker": 2,
+            "automatic_downloads": 2,
+            "midi_sysex": 2,
+            "push_messaging": 2,
+            "ssl_cert_decisions": 2,
+            "metro_switch_to_desktop": 2,
+            "protected_media_identifier": 2,
+            "app_banner": 2,
+            "site_engagement": 2,
+            "durable_storage": 2
+        }
+    }
+    chrome_options.add_experimental_option("prefs", chrome_prefs)
+    
     service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=chrome_options)
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver.set_page_load_timeout(30)
+    
+    return driver
+
+def handle_popups(driver):
+    popup_selectors = [
+        "button[data-dismiss='modal']",
+        ".close-button",
+        ".popup-close",
+        "[class*='close']",
+        "[id*='close']",
+        "[class*='popup']",
+        "[id*='popup']",
+        "[class*='modal']",
+        "[id*='modal']",
+        "button:contains('Close')",
+        "button:contains('Got it')",
+        "button:contains('Accept')",
+        "button:contains('I agree')"
+    ]
+    
+    for selector in popup_selectors:
+        try:
+            elements = WebDriverWait(driver, 2).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector)))
+            for element in elements:
+                try:
+                    driver.execute_script("arguments[0].click();", element)
+                except ElementClickInterceptedException:
+                    driver.execute_script("arguments[0].remove();", element)
+        except TimeoutException:
+            continue
 
 def get_page_content(url: str, page: int = 1) -> str:
     driver = setup_driver()
@@ -31,23 +100,21 @@ def get_page_content(url: str, page: int = 1) -> str:
         full_url = f"{url}?page={page}" if page > 1 else url
         driver.get(full_url)
         
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         
-        def is_page_loaded(driver):
-            return driver.execute_script("return document.readyState") == "complete"
-        
-        WebDriverWait(driver, 30).until(is_page_loaded)
+        handle_popups(driver)
         
         last_height = driver.execute_script("return document.body.scrollHeight")
         while True:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
+            handle_popups(driver)
             new_height = driver.execute_script("return document.body.scrollHeight")
             if new_height == last_height:
                 break
             last_height = new_height
         
-        time.sleep(2)
+        handle_popups(driver)
         
         return driver.page_source
     finally:
@@ -142,7 +209,7 @@ def scrape_with_pagination(url: str, config: Dict, num_pages: int) -> List[Dict]
     return all_data
 
 def interactive_mode():
-    print("Welcome to the Interactive Web Scraper with Preview!")
+    print("Welcome to the Interactive Web Scraper with Aggressive Popup Handling!")
     url = input("Enter the URL to scrape: ")
     
     html_content = get_page_content(url)
@@ -167,7 +234,7 @@ def interactive_mode():
     return url, config, pages, output_file, output_format
 
 def main():
-    parser = argparse.ArgumentParser(description="Interactive Web Scraper with Preview")
+    parser = argparse.ArgumentParser(description="Interactive Web Scraper with Aggressive Popup Handling")
     parser.add_argument("-u", "--url", help="URL to scrape")
     parser.add_argument("-o", "--output", help="Output file name")
     parser.add_argument("-f", "--format", choices=["csv", "json"], default="csv", help="Output format (default: csv)")
