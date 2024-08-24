@@ -17,6 +17,8 @@ import sys
 from prettytable import PrettyTable
 import time
 import textwrap
+import traceback
+import re
 
 def setup_driver():
     chrome_options = Options()
@@ -29,6 +31,7 @@ def get_page_content(url: str, page: int = 1) -> str:
     driver = setup_driver()
     try:
         full_url = f"{url}?page={page}" if page > 1 else url
+        print(f"Fetching URL: {full_url}")
         driver.get(full_url)
         
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
@@ -54,19 +57,41 @@ def get_page_content(url: str, page: int = 1) -> str:
         driver.quit()
 
 def find_repeating_elements(soup: BeautifulSoup) -> List[Dict]:
-    elements = soup.find_all(class_=True)
-    class_counts = Counter(element.get('class')[0] for element in elements if element.get('class'))
-    
+    def make_hashable(item):
+        if isinstance(item, list):
+            return tuple(make_hashable(i) for i in item)
+        elif isinstance(item, dict):
+            return tuple(sorted((k, make_hashable(v)) for k, v in item.items()))
+        else:
+            return item
+
+    def count_elements(elements):
+        return Counter(tuple(sorted((k, make_hashable(v)) for k, v in el.attrs.items())) for el in elements if el.attrs)
+
     potential_items = []
-    for class_name, count in class_counts.most_common(10):
-        if count > 3:
-            elements = soup.find_all(class_=class_name)
-            if all(len(el.find_all()) > 2 for el in elements):
-                potential_items.append({
-                    'class': class_name,
-                    'count': count,
-                    'sample': elements[0]
-                })
+    for tag in ['div', 'li', 'article', 'section', 'span']:
+        elements = soup.find_all(tag)
+        element_counts = count_elements(elements)
+        
+        for element_attrs, count in element_counts.most_common(20):
+            if count > 2:
+                sample_element = next(el for el in elements if tuple(sorted((k, make_hashable(v)) for k, v in el.attrs.items())) == element_attrs)
+                class_name = sample_element.get('class', [''])[0] if sample_element.get('class') else ''
+                
+                has_listing_attributes = any(attr in ['data-aut-id', 'itemtype', 'itemprop'] for attr in sample_element.attrs)
+                
+                content = ' '.join(sample_element.stripped_strings)
+                has_price = bool(re.search(r'(\$|₹|€|£|\d+,\d{3})', content))
+                has_title = len(content.split()) > 3
+                
+                if has_listing_attributes or has_price or has_title:
+                    potential_items.append({
+                        'tag': tag,
+                        'attrs': dict(element_attrs),
+                        'class': class_name,
+                        'count': count,
+                        'sample': sample_element
+                    })
     
     return potential_items
 
@@ -88,7 +113,9 @@ def interactive_configuration(potential_items: List[Dict]) -> Dict:
     for i, item in enumerate(potential_items, 1):
         print(f"\n{'-' * 40}")
         print(f"Option {i}:")
+        print(f"Tag: {item['tag']}")
         print(f"Class: {item['class']}")
+        print(f"Attributes: {item['attrs']}")
         print(f"Count: {item['count']}")
         print("Preview:")
         print(create_ascii_preview(item['sample']))
@@ -105,12 +132,20 @@ def interactive_configuration(potential_items: List[Dict]) -> Dict:
         except ValueError:
             print("Invalid input. Please enter a number.")
     
+    selector = f"{selected_item['tag']}"
+    for attr, value in selected_item['attrs'].items():
+        if attr == 'class':
+            selector += f".{' .'.join(value)}"
+        else:
+            selector += f"[{attr}='{value}']"
+    
     return {
-        'item_selector': f".{selected_item['class']}"
+        'item_selector': selector
     }
 
 def extract_data(soup: BeautifulSoup, config: Dict) -> List[Dict]:
     items = soup.select(config['item_selector'])
+    print(f"Found {len(items)} items matching the selector: {config['item_selector']}")
     data = []
     for item in items:
         values = extract_text_values(item)
@@ -123,19 +158,16 @@ def save_to_csv(data: List[Dict], filename: str):
         print("No data to save.")
         return
     
-    # Find all possible fieldnames
     all_fieldnames = set()
     for item in data:
         all_fieldnames.update(item.keys())
     
-    # Sort fieldnames to ensure consistent order
     fieldnames = sorted(list(all_fieldnames))
     
     with open(filename, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in data:
-            # Fill in missing values with empty strings
             row_data = {field: row.get(field, '') for field in fieldnames}
             writer.writerow(row_data)
     
@@ -163,6 +195,13 @@ def interactive_mode():
     html_content = get_page_content(url)
     soup = BeautifulSoup(html_content, 'html.parser')
     potential_items = find_repeating_elements(soup)
+    
+    if not potential_items:
+        print("No repeating elements found. Please check the URL and try again.")
+        print("Here's a sample of the HTML content:")
+        print(soup.prettify()[:1000])  # Print the first 1000 characters of the HTML
+        sys.exit(1)
+    
     config = interactive_configuration(potential_items)
     
     while True:
@@ -189,22 +228,31 @@ def main():
     parser.add_argument("-p", "--pages", type=int, default=1, help="Number of pages to scrape (default: 1)")
     args = parser.parse_args()
 
-    if len(sys.argv) == 1:
-        url, config, pages, output_file, output_format = interactive_mode()
-    else:
-        if not args.url:
-            args.url = input("Enter the URL to scrape: ")
-        url = args.url
-        html_content = get_page_content(url)
-        soup = BeautifulSoup(html_content, 'html.parser')
-        potential_items = find_repeating_elements(soup)
-        config = interactive_configuration(potential_items)
-        pages = args.pages
-        output_file = args.output or input("Enter the output file name: ")
-        output_format = args.format
-
     try:
+        if len(sys.argv) == 1:
+            url, config, pages, output_file, output_format = interactive_mode()
+        else:
+            if not args.url:
+                args.url = input("Enter the URL to scrape: ")
+            url = args.url
+            html_content = get_page_content(url)
+            soup = BeautifulSoup(html_content, 'html.parser')
+            potential_items = find_repeating_elements(soup)
+            if not potential_items:
+                print("No repeating elements found. Please check the URL and try again.")
+                print("Here's a sample of the HTML content:")
+                print(soup.prettify()[:1000])
+                sys.exit(1)
+            config = interactive_configuration(potential_items)
+            pages = args.pages
+            output_file = args.output or input("Enter the output file name: ")
+            output_format = args.format
+
         data = scrape_with_pagination(url, config, pages)
+
+        if not data:
+            print("No data was extracted. Please check the selected element and try again.")
+            sys.exit(1)
 
         if output_format == "csv":
             save_to_csv(data, output_file)
@@ -214,6 +262,8 @@ def main():
         print(f"Data saved to {output_file}")
     except Exception as e:
         print(f"An error occurred during scraping: {str(e)}")
+        print("Here's the full traceback:")
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":
